@@ -1,0 +1,3 @@
+fastapi
+uvicorn
+# Add more as you build (opencv-python, torch, pandas, etc.)
