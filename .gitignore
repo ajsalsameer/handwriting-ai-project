@@ -1,0 +1,42 @@
+# Byte-compiled / cache / temp files
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.log
+
+# Virtual environment
+env/
+venv/
+
+# Jupyter/IPython
+.ipynb_checkpoints/
+
+# VSCode settings
+.vscode/
+.idea/
+
+# OS X, Windows
+.DS_Store
+Thumbs.db
+
+# Environment variables/secrets
+.env
+.env.*
+
+# Database (if SQLite DB should NOT be public, otherwise comment this)
+*.db
+
+# PDF, generated outputs, large models (uncommitted outputs)
+data/outputs/
+data/samples/
+data/test_docs/
+
+# Hugging Face/transformers cache (if you don’t want these tracked)
+~/.cache/huggingface/
+
+# PyMuPDF cache
+__pymupdf__*
