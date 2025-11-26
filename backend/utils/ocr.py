@@ -113,7 +113,7 @@ def detect_missing_chars(text: str) -> dict:
 
 # ——— Quick Test ———
 if __name__ == "__main__":
-    test_file = "data/test_docs/test_image.png" 
+    test_file = "data/test_docs/test_image.jpg" 
     
     print(f"🔎 Looking for file: {test_file}")
     if os.path.exists(test_file):
