@@ -1,75 +1,86 @@
 # backend/utils/ocr.py
 import torch
-from transformers import AutoProcessor, PaliGemmaForConditionalGeneration, BitsAndBytesConfig
+from transformers import AutoProcessor, AutoModelForCausalLM
 from PIL import Image
 import fitz  # PyMuPDF
 import os
 import re
 
-# ——— 4-bit Quantization Config (The "Compressor") ———
-quant_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_quant_type="nf4",
-    bnb_4bit_compute_dtype=torch.float16,
-    bnb_4bit_use_double_quant=True,
-)
+# ——— Load Florence-2 (Lighter, Faster, Crash-Proof) ———
+print("⏳ Loading Florence-2 (OCR Engine)...")
 
-# ——— Load PaliGemma (The "Brain") ———
-print("⏳ Loading PaliGemma... (This takes ~2-5 mins the first time)")
-processor = AutoProcessor.from_pretrained("google/paligemma-3b-pt-224")
+# Note: We don't need bitsandbytes quantization here because 
+# Florence-2 is small enough (0.7B) to fit in your 4GB VRAM natively!
+device = "cuda" if torch.cuda.is_available() else "cpu"
+torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
-model = PaliGemmaForConditionalGeneration.from_pretrained(
-    "google/paligemma-3b-pt-224",
-    quantization_config=quant_config,
-    device_map="auto",
-    trust_remote_code=True,
-    low_cpu_mem_usage=True,   # <--- CRITICAL: Prevents RAM Crash!
-    use_safetensors=True      # <--- CRITICAL: Fixes Security Error!
-)
-print("✅ PaliGemma Ready! VRAM ≈ 2.2 GB\n")
+model = AutoModelForCausalLM.from_pretrained(
+    "microsoft/Florence-2-large", 
+    torch_dtype=torch_dtype,
+    trust_remote_code=True
+).to(device)
+
+processor = AutoProcessor.from_pretrained("microsoft/Florence-2-large", trust_remote_code=True)
+
+print(f"✅ Florence-2 Ready on {device.upper()}! (No quantization needed)\n")
 
 def extract_text_from_file(file_path: str) -> str:
     """Accepts PDF or image path -> returns clean extracted text"""
     if file_path.lower().endswith(".pdf"):
         try:
+            # 1. Try to extract text directly (fastest)
             doc = fitz.open(file_path)
             text = ""
             for page in doc:
                 text += page.get_text()
-            # If PDF has text layers, return them. If empty, use OCR (scanned PDF).
-            return text.strip() if text.strip() else _ocr_image_from_pdf(file_path)
+            
+            # 2. If empty, use AI Vision (OCR)
+            if not text.strip():
+                print("   (PDF is scanned image, running AI Vision...)")
+                return _ocr_image_from_pdf(file_path)
+            return text.strip()
         except Exception as e:
             return f"Error reading PDF: {e}"
     else:  # It's an image
         return _ocr_image(file_path)
 
 def _ocr_image(image_input) -> str:
-    """
-    Helper: Runs AI Vision on an image.
-    Handles both file paths (str) and PIL Image objects.
-    """
+    """Helper: Runs Florence-2 Vision on an image."""
     if isinstance(image_input, str):
         image = Image.open(image_input).convert("RGB")
     else:
-        image = image_input.convert("RGB") # It's already an object from PDF function
+        image = image_input.convert("RGB")
 
-    # The Prompt: We tell the AI what to look for
-    prompt = "extract text"
-    inputs = processor(text=prompt, images=image, return_tensors="pt").to("cuda")
+    # Florence-2 uses specific prompts. '<OCR>' tells it to read text.
+    prompt = "<OCR>"
     
-    # Generate text (limit to 512 tokens to save memory)
-    output = model.generate(**inputs, max_new_tokens=512)
+    inputs = processor(text=prompt, images=image, return_tensors="pt").to(device, torch_dtype)
+
+    # Generate
+    generated_ids = model.generate(
+        input_ids=inputs["input_ids"],
+        pixel_values=inputs["pixel_values"],
+        max_new_tokens=1024,
+        do_sample=False,
+        num_beams=3,
+    )
     
-    # Decode result
-    text = processor.decode(output[0], skip_special_tokens=True)
+    # Decode
+    generated_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
     
-    # Remove the prompt from the result if the model repeats it
-    return text.replace(prompt, "").strip()
+    # Post-process: Extract the text from the result
+    parsed_answer = processor.post_process_generation(
+        generated_text, 
+        task=prompt, 
+        image_size=(image.width, image.height)
+    )
+    
+    return parsed_answer.get(prompt, "")
 
 def _ocr_image_from_pdf(pdf_path: str) -> str:
     """Fallback: convert first page of Scanned PDF to image and OCR"""
     doc = fitz.open(pdf_path)
-    page = doc[0]
+    page = doc[0] # Analyze first page
     pix = page.get_pixmap(dpi=300)
     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
     return _ocr_image(img)
@@ -102,7 +113,6 @@ def detect_missing_chars(text: str) -> dict:
 
 # ——— Quick Test ———
 if __name__ == "__main__":
-    # Ensure this path exists or change it!
     test_file = "data/test_docs/test_image.png" 
     
     print(f"🔎 Looking for file: {test_file}")
@@ -114,7 +124,6 @@ if __name__ == "__main__":
         print("\n——— RESULTS ———")
         print(f"📝 Text Found: {result['full_text']}\n")
         print(f"❌ Missing Letters: {result['missing_letters']}")
-        print(f"❌ Missing Symbols: {result['missing_symbols']}")
     else:
         print(f"⚠️ Test file not found at: {test_file}")
         print("Please put an image or PDF in 'HandwritingAI/data/test_docs/' and name it 'test_image.png'")
